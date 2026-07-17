@@ -710,6 +710,8 @@ AI 会改变知识工作，但不会替代管理者对业务本质的判断。�
 const els = {
   fileInput: document.querySelector("#fileInput"),
   fileInputWrapper: document.querySelector("#fileInput")?.parentElement,
+  urlImportForm: document.querySelector("#urlImportForm"),
+  urlInput: document.querySelector("#urlInput"),
   authScreen: document.querySelector("#authScreen"),
   loginForm: document.querySelector("#loginForm"),
   registerForm: document.querySelector("#registerForm"),
@@ -1704,6 +1706,7 @@ async function saveAnalyzedDocument(item, analysis) {
     materialCode,
     title: normalizeDocTitle(item.title || item.fileName || "未命名材料"),
     fileName: item.fileName || item.title,
+    sourceUrl: item.sourceUrl || existingDoc?.sourceUrl || "",
     fileSize: item.fileSize || 0,
     fileFingerprint: item.fileFingerprint || materialFingerprint(item.fileName, item.fileSize, item.rawText),
     categoryId: category?.id || "",
@@ -3388,6 +3391,9 @@ function setUploadLocked(locked) {
   state.uploadLocked = locked;
   if (els.fileInput) {
     els.fileInput.disabled = locked;
+  }
+  if (els.urlInput) {
+    els.urlInput.disabled = locked;
   }
   if (els.dropZone) {
     els.dropZone.classList.toggle("is-disabled", locked);
@@ -5529,16 +5535,16 @@ function defaultAnalysisMaxTokens(text = "", skill = currentTopicSkill()) {
   const typeId = skill?.targetMaterialTypeId || "type-executive-view";
   const kind = materialTypeKind(typeId, typeName);
   if (kind === "training") {
-    return 24000;
+    return 64000;
   }
   if (kind === "meeting") {
-    return 16000;
+    return 36000;
   }
   const caseCount = countExecutiveCaseScenes(text);
   if (caseCount >= 8) {
-    return Math.min(32000, Math.max(18000, caseCount * 1800));
+    return Math.min(64000, Math.max(32000, caseCount * 2400));
   }
-  return 16000;
+  return 28000;
 }
 
 async function analyzeWithDeepSeek(text, options = {}) {
@@ -5933,9 +5939,19 @@ async function callDeepSeek(settings, messages, options = {}) {
   const payload = await response.json();
   const finishReason = payload?.choices?.[0]?.finish_reason;
   if (finishReason && finishReason !== "stop") {
-    throw new Error(`DeepSeek 返回未完整结束：${finishReason}`);
+    throw new Error(formatDeepSeekFinishReason(finishReason, requestBody, payload));
   }
   return payload;
+}
+
+function formatDeepSeekFinishReason(finishReason, requestBody, payload) {
+  if (finishReason === "length") {
+    const maxTokens = requestBody.max_tokens || "默认";
+    const completionTokens = payload?.usage?.completion_tokens || payload?.usage?.output_tokens || "";
+    const usageText = completionTokens ? `，本次已生成约 ${completionTokens} tokens` : "";
+    return `DeepSeek 返回内容被 max_tokens 截断：当前上限 ${maxTokens}${usageText}。建议关闭思考模式或把推理强度调为中/低后重试；如果仍失败，请拆分长文，或在代码中继续提高分析输出上限。`;
+  }
+  return `DeepSeek 返回未完整结束：${finishReason}`;
 }
 
 function formatDeepSeekNetworkError(error) {
@@ -10926,6 +10942,142 @@ async function handleFiles(files) {
   }
 }
 
+function normalizeArticleUrl(value = "") {
+  const url = new URL(String(value).trim());
+  if (!["http:", "https:"].includes(url.protocol)) {
+    throw new Error("只支持 http 或 https 链接。");
+  }
+  return url.toString();
+}
+
+function articleTitleFromUrl(url) {
+  const parsed = new URL(url);
+  const slug = decodeURIComponent(parsed.pathname.split("/").filter(Boolean).pop() || parsed.hostname)
+    .replace(/\.[a-z0-9]+$/i, "")
+    .replace(/[-_]+/g, " ")
+    .trim();
+  return slug || parsed.hostname;
+}
+
+function extractArticleFromHtml(html, url) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, "text/html");
+  doc.querySelectorAll("script, style, noscript, iframe, svg, canvas, nav, header, footer, aside, form, button").forEach((node) => node.remove());
+  const title = doc.querySelector("meta[property='og:title']")?.content
+    || doc.querySelector("meta[name='twitter:title']")?.content
+    || doc.querySelector("title")?.textContent
+    || articleTitleFromUrl(url);
+  const candidates = [
+    doc.querySelector("article"),
+    doc.querySelector("main"),
+    doc.querySelector("[role='main']"),
+    doc.body,
+  ].filter(Boolean);
+  let best = "";
+  for (const node of candidates) {
+    const text = normalizeText(node.textContent || "");
+    if (text.length > best.length) {
+      best = text;
+    }
+  }
+  return {
+    title: normalizeText(title).slice(0, 120) || articleTitleFromUrl(url),
+    rawText: best,
+  };
+}
+
+async function fetchArticleFromUrl(url) {
+  try {
+    const response = await fetch(url, { redirect: "follow" });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const contentType = response.headers.get("content-type") || "";
+    if (!/text\/html|text\/plain|application\/xhtml\+xml/i.test(contentType)) {
+      throw new Error(`URL 返回的不是网页正文：${contentType || "未知类型"}`);
+    }
+    const body = await response.text();
+    return /text\/plain/i.test(contentType)
+      ? { title: articleTitleFromUrl(url), rawText: normalizeText(body) }
+      : extractArticleFromHtml(body, url);
+  } catch (error) {
+    const response = await fetch("/api/url/extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(detail.message || detail.error || `URL 读取失败：${error.message}`);
+    }
+    return response.json();
+  }
+}
+
+async function handleUrlImport(value) {
+  if (state.isAnalyzing || state.uploadLocked) {
+    setUploadLog("分析中", "大模型正在执行分析，暂时不能继续导入 URL。");
+    return;
+  }
+  if (state.draftUploadItems.length + state.uploadItems.length + 1 > MAX_UPLOAD_FILES) {
+    setUploadLog("超过限制", `最多保留 ${MAX_UPLOAD_FILES} 份待处理材料，当前已有 ${state.draftUploadItems.length + state.uploadItems.length} 份。`);
+    return;
+  }
+  let url = "";
+  try {
+    url = normalizeArticleUrl(value);
+  } catch (error) {
+    setUploadLog("URL 无效", error.message);
+    return;
+  }
+  state.uploadBatchSaved = false;
+  state.uploadAnalysisCompleted = false;
+  setUploadLog("读取 URL", `正在读取文章：${url}`);
+  try {
+    const article = await fetchArticleFromUrl(url);
+    const rawText = normalizeText(article.rawText || "");
+    if (rawText.length < 100) {
+      throw new Error("没有解析到足够正文内容，请检查链接是否需要登录，或改为上传/粘贴文档。");
+    }
+    const title = normalizeText(article.title || articleTitleFromUrl(url)).slice(0, 80);
+    const nextItem = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      fileName: url,
+      fileSize: new Blob([rawText]).size,
+      title,
+      rawText,
+      sourceUrl: url,
+      wordCount: normalizeText(rawText).length,
+      materialSourceId: "",
+      materialTypeId: "",
+      selected: true,
+      overwrite: false,
+    };
+    nextItem.fileFingerprint = materialFingerprint(nextItem.fileName, nextItem.fileSize, nextItem.rawText);
+    const duplicateDoc = findDuplicateDocument(nextItem);
+    if (duplicateDoc) {
+      nextItem.existingDocId = duplicateDoc.id;
+      nextItem.existingDocTitle = duplicateDoc.title;
+    }
+    state.draftUploadItems.push(nextItem);
+    state.rawText = state.draftUploadItems.map((item) => `【${item.title}】\n${item.rawText}`).join("\n\n");
+    if (els.sourceText) {
+      els.sourceText.value = state.rawText;
+    }
+    if (els.docNameInput) {
+      els.docNameInput.value = state.draftUploadItems.length === 1 ? title : `批量材料 ${state.draftUploadItems.length} 篇`;
+    }
+    if (els.urlInput) {
+      els.urlInput.value = "";
+    }
+    renderUploadMaterialList();
+    setUploadLocked(false);
+    setUploadLog("待保存", `已读取 URL 文章：${title}。请选择资料来源和材料场景后点击保存。`);
+  } catch (error) {
+    setUploadLog("读取失败", `URL 读取失败：${error.message}`);
+  }
+}
+
 function readUInt16(data, offset) {
   return data[offset] | (data[offset + 1] << 8);
 }
@@ -11439,6 +11591,9 @@ function clearWorkspace() {
   els.tagInput.value = "";
   els.sourceText.value = "";
   els.fileInput.value = "";
+  if (els.urlInput) {
+    els.urlInput.value = "";
+  }
   setUploadLocked(false);
   renderUploadMaterialList();
   renderPendingUploadMaterialList();
@@ -11456,6 +11611,11 @@ els.fileInput.addEventListener("change", (event) => {
     return;
   }
   handleFiles(event.target.files);
+});
+
+els.urlImportForm?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  handleUrlImport(els.urlInput?.value || "");
 });
 
 els.authTabs.forEach((tab) => {

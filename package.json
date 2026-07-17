@@ -1,0 +1,22 @@
+{
+  "name": "wistalk",
+  "version": "1.9.0",
+  "description": "Wistalk static frontend with a lightweight B/S backend.",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "check": "node --check server/index.js && node --check server/db.js && node --check server/security.js && node --check server/auth.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.5.0",
+    "express": "^4.21.2",
+    "helmet": "^8.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.0.1"
+  },
+  "engines": {
+    "node": ">=22.5"
+  }
+}

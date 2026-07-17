@@ -107,6 +107,15 @@ app.get("/api/health", (req, res) => {
 app.post("/api/url/extract", async (req, res) => {
   try {
     const targetUrl = normalizeArticleUrl(req.body.url);
+    if (isKmsUrl(targetUrl, req.body.kms?.host)) {
+      const article = await fetchKmsArticle(targetUrl, req.body.kms || {});
+      if ((article.rawText || "").length < 100) {
+        res.status(422).json({ error: "ARTICLE_TEXT_TOO_SHORT", message: "KMS 已返回，但没有解析到足够正文内容。" });
+        return;
+      }
+      res.json(article);
+      return;
+    }
     await assertPublicHttpUrl(targetUrl);
     const response = await fetchPublicUrl(targetUrl);
     if (!response.ok) {
@@ -429,6 +438,52 @@ function normalizeArticleUrl(value = "") {
   }
   url.hash = "";
   return url.toString();
+}
+
+function kmsHost(configuredHost = "") {
+  return String(configuredHost || process.env.KMS_HOST || "kms.fineres.com").trim().toLowerCase();
+}
+
+function isKmsUrl(targetUrl, configuredHost = "") {
+  const url = new URL(targetUrl);
+  return url.hostname.toLowerCase() === kmsHost(configuredHost);
+}
+
+function kmsPageIdFromUrl(targetUrl) {
+  const url = new URL(targetUrl);
+  const pageId = url.searchParams.get("pageId") || url.pathname.match(/\/pages\/(\d+)/)?.[1] || "";
+  if (!/^\d+$/.test(pageId)) {
+    throw new Error("KMS URL 中没有识别到 pageId。");
+  }
+  return pageId;
+}
+
+async function fetchKmsArticle(targetUrl, options = {}) {
+  const host = kmsHost(options.host);
+  const token = String(options.token || process.env.KMS_API_TOKEN || "").trim();
+  if (!token) {
+    throw new Error("缺少 KMS API 个人访问令牌。");
+  }
+  const pageId = kmsPageIdFromUrl(targetUrl);
+  const apiUrl = `https://${host}/rest/api/content/${pageId}?expand=body.storage,body.view,version`;
+  const response = await fetch(apiUrl, {
+    headers: {
+      "accept": "application/json",
+      "authorization": `Bearer ${token}`,
+      "user-agent": "Wistalk/1.0",
+    },
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`KMS API 返回 ${response.status}：${text.slice(0, 160)}`);
+  }
+  const payload = await response.json();
+  const html = payload?.body?.storage?.value || payload?.body?.view?.value || "";
+  return {
+    title: normalizeWhitespace(payload?.title || titleFromUrl(targetUrl)).slice(0, 120) || titleFromUrl(targetUrl),
+    rawText: stripHtml(html),
+  };
 }
 
 function isPrivateAddress(address) {

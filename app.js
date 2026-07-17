@@ -204,6 +204,10 @@ const DEFAULT_DEEPSEEK_SETTINGS = {
   thinking: "enabled",
   reasoningEffort: "high",
 };
+const DEFAULT_KMS_SETTINGS = {
+  host: "kms.fineres.com",
+  token: "",
+};
 const MODEL_PROVIDERS = [
   { id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com", model: "deepseek-v4-flash" },
   { id: "fineres", name: "帆软内网模型", baseUrl: "https://it-ai.fineres.com/v1", model: "deepseek-v4-pro" },
@@ -2056,6 +2060,13 @@ function readDeepSeekSettings() {
   };
 }
 
+function readKmsSettings() {
+  return {
+    ...DEFAULT_KMS_SETTINGS,
+    ...(state.currentUser?.kmsSettings || {}),
+  };
+}
+
 async function saveDeepSeekSettings(settings) {
   if (!state.currentUser) {
     return;
@@ -2067,6 +2078,22 @@ async function saveDeepSeekSettings(settings) {
       ...settings,
     },
     deepseekSettingsUpdatedAt: new Date().toISOString(),
+  };
+  await putUser(updated);
+  state.currentUser = updated;
+}
+
+async function saveKmsSettings(settings) {
+  if (!state.currentUser) {
+    return;
+  }
+  const updated = {
+    ...state.currentUser,
+    kmsSettings: {
+      ...DEFAULT_KMS_SETTINGS,
+      ...settings,
+    },
+    kmsSettingsUpdatedAt: new Date().toISOString(),
   };
   await putUser(updated);
   state.currentUser = updated;
@@ -3784,6 +3811,16 @@ function readDeepSeekSettingsFromConfig() {
     model: els.configPage.querySelector("#deepseekModel")?.value?.trim() || "",
     thinking: els.configPage.querySelector("#deepseekThinking")?.value || "enabled",
     reasoningEffort: els.configPage.querySelector("#deepseekReasoningEffort")?.value || "high",
+  };
+}
+
+function readKmsSettingsFromConfig() {
+  if (!els.configPage) {
+    return readKmsSettings();
+  }
+  return {
+    host: els.configPage.querySelector("#kmsHost")?.value?.trim() || DEFAULT_KMS_SETTINGS.host,
+    token: els.configPage.querySelector("#kmsToken")?.value?.trim() || "",
   };
 }
 
@@ -9480,6 +9517,7 @@ function renderConfigPage() {
   }
   const theme = selectedTheme();
   const ds = readDeepSeekSettings();
+  const kms = readKmsSettings();
   const fs = readFontSettings();
   const providerOptions = MODEL_PROVIDERS.map((provider) => `<option value="${escapeHtml(provider.id)}"${(ds.provider || "deepseek") === provider.id ? " selected" : ""}>${escapeHtml(provider.name)}</option>`).join("");
   const fontOptions = FONT_SIZE_PRESETS.map((preset) => `
@@ -9502,6 +9540,7 @@ function renderConfigPage() {
       <button type="button" data-anchor-target="#themeSettings">系统配色</button>
       <button type="button" data-anchor-target="#fontSettings">字体大小</button>
       <button type="button" data-anchor-target="#deepseekSettings">大模型配置</button>
+      <button type="button" data-anchor-target="#kmsSettings">KMS 配置</button>
     </nav>
     <div class="config-grid">
       <section class="config-card" id="accountSettings">
@@ -9563,6 +9602,23 @@ function renderConfigPage() {
         </div>
         <p class="auth-message" id="deepseekMessage"></p>
       </section>
+      <section class="config-card config-theme-card" id="kmsSettings">
+        <h3>KMS 配置</h3>
+        <p class="auth-note">用于读取公司 KMS 页面。个人访问令牌只保存在当前浏览器账号配置中，不会提交到仓库。</p>
+        <label class="config-field">
+          <span>KMS 域名 <em>必填</em></span>
+          <input class="text-input" id="kmsHost" type="text" placeholder="kms.fineres.com" value="${escapeHtml(kms.host)}" />
+        </label>
+        <label class="config-field">
+          <span>个人访问令牌 <em>必填</em></span>
+          <input class="text-input" id="kmsToken" type="password" autocomplete="off" placeholder="粘贴 KMS API 访问令牌" value="${escapeHtml(kms.token)}" />
+        </label>
+        <div class="config-actions">
+          <button class="primary nowrap-button" id="testKmsBtn" type="button">测试 KMS</button>
+          <button class="primary full-button" id="saveKmsSettingsBtn" type="button">保存 KMS 配置</button>
+        </div>
+        <p class="auth-message" id="kmsMessage"></p>
+      </section>
     </div>
   `;
   bindAnchorNav(els.configPage);
@@ -9598,6 +9654,22 @@ function renderConfigPage() {
     const message = els.configPage.querySelector("#deepseekMessage");
     if (message) {
       message.textContent = "大模型配置已保存。";
+      message.dataset.tone = "success";
+    }
+  });
+  els.configPage.querySelector("#saveKmsSettingsBtn")?.addEventListener("click", async () => {
+    const ok = await confirmAction({
+      title: "保存 KMS 配置",
+      message: "确认保存当前 KMS 域名和个人访问令牌吗？后续 URL 导入会优先使用这套配置读取 KMS 页面。",
+      confirmText: "确认保存",
+    });
+    if (!ok) {
+      return;
+    }
+    await saveKmsSettings(readKmsSettingsFromConfig());
+    const message = els.configPage.querySelector("#kmsMessage");
+    if (message) {
+      message.textContent = "KMS 配置已保存。";
       message.dataset.tone = "success";
     }
   });
@@ -9678,6 +9750,33 @@ function renderConfigPage() {
         message.dataset.tone = "error";
       }
       syncDeepSeekConfigButtons();
+    }
+  });
+  els.configPage.querySelector("#testKmsBtn")?.addEventListener("click", async () => {
+    const ok = await confirmAction({
+      title: "测试 KMS 连接",
+      message: "确认使用当前 KMS 配置读取测试页面吗？",
+      confirmText: "确认测试",
+    });
+    if (!ok) {
+      return;
+    }
+    const message = els.configPage.querySelector("#kmsMessage");
+    if (message) {
+      message.textContent = "正在读取 KMS 测试页面...";
+      message.dataset.tone = "info";
+    }
+    try {
+      const result = await testKmsConnection(readKmsSettingsFromConfig());
+      if (message) {
+        message.textContent = result.message;
+        message.dataset.tone = "success";
+      }
+    } catch (error) {
+      if (message) {
+        message.textContent = `测试失败：${error.message}`;
+        message.dataset.tone = "error";
+      }
     }
   });
   syncDeepSeekConfigButtons();
@@ -10959,6 +11058,83 @@ function articleTitleFromUrl(url) {
   return slug || parsed.hostname;
 }
 
+function isKmsUrl(url, settings = readKmsSettings()) {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname.toLowerCase() === String(settings.host || DEFAULT_KMS_SETTINGS.host).toLowerCase();
+  } catch (error) {
+    return false;
+  }
+}
+
+function kmsPageIdFromUrl(url) {
+  const parsed = new URL(url);
+  const pageId = parsed.searchParams.get("pageId") || parsed.pathname.match(/\/pages\/(\d+)/)?.[1] || "";
+  if (!/^\d+$/.test(pageId)) {
+    throw new Error("KMS URL 中没有识别到 pageId。");
+  }
+  return pageId;
+}
+
+function extractKmsStorageText(html = "") {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(String(html), "text/html");
+  doc.querySelectorAll("script, style, noscript").forEach((node) => node.remove());
+  return normalizeText(doc.body?.textContent || doc.documentElement?.textContent || "");
+}
+
+async function fetchKmsArticleFromApi(url, settings = readKmsSettings()) {
+  if (!settings.token) {
+    throw new Error("请先在系统配置 > KMS 配置中填写个人访问令牌。");
+  }
+  const pageId = kmsPageIdFromUrl(url);
+  const host = settings.host || DEFAULT_KMS_SETTINGS.host;
+  const apiUrl = `https://${host}/rest/api/content/${pageId}?expand=body.storage,body.view,version`;
+  const response = await fetch(apiUrl, {
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${settings.token}`,
+    },
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`KMS API 返回 ${response.status}：${text.slice(0, 120)}`);
+  }
+  const payload = await response.json();
+  const html = payload?.body?.storage?.value || payload?.body?.view?.value || "";
+  const rawText = extractKmsStorageText(html);
+  return {
+    title: normalizeText(payload?.title || articleTitleFromUrl(url)).slice(0, 120),
+    rawText,
+  };
+}
+
+async function testKmsConnection(settings = readKmsSettingsFromConfig()) {
+  const testUrl = "https://kms.fineres.com/pages/viewpage.action?pageId=1436055334";
+  let article;
+  try {
+    article = await fetchKmsArticleFromApi(testUrl, settings);
+  } catch (error) {
+    const response = await fetch("/api/url/extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url: testUrl, kms: settings }),
+    });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      throw new Error(detail.message || detail.error || error.message);
+    }
+    article = await response.json();
+  }
+  if (!article.rawText || article.rawText.length < 100) {
+    throw new Error("KMS 已返回，但未解析到足够正文。");
+  }
+  return {
+    ok: true,
+    message: `KMS 连接成功，已读取《${article.title || "未命名页面"}》。`,
+  };
+}
+
 function extractArticleFromHtml(html, url) {
   const parser = new DOMParser();
   const doc = parser.parseFromString(html, "text/html");
@@ -10987,6 +11163,14 @@ function extractArticleFromHtml(html, url) {
 }
 
 async function fetchArticleFromUrl(url) {
+  const kmsSettings = readKmsSettings();
+  if (isKmsUrl(url, kmsSettings) && kmsSettings.token) {
+    try {
+      return await fetchKmsArticleFromApi(url, kmsSettings);
+    } catch (error) {
+      // Browser CORS often blocks KMS API; the local backend proxy is the fallback.
+    }
+  }
   try {
     const response = await fetch(url, { redirect: "follow" });
     if (!response.ok) {
@@ -11004,7 +11188,12 @@ async function fetchArticleFromUrl(url) {
     const response = await fetch("/api/url/extract", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url }),
+      body: JSON.stringify({
+        url,
+        kms: isKmsUrl(url, kmsSettings)
+          ? { host: kmsSettings.host, token: kmsSettings.token }
+          : null,
+      }),
     });
     if (!response.ok) {
       const detail = await response.json().catch(() => ({}));

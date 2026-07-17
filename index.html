@@ -152,6 +152,10 @@
                       <span class="drop-icon" aria-hidden="true">↑</span>
                       <span><strong>上传材料</strong><small>最多 10 份；单个文件不超过 50MB；支持 .docx / .txt / .md</small></span>
                     </label>
+                    <form class="url-import-row" id="urlImportForm" aria-label="URL 导入文章">
+                      <input class="text-input" id="urlInput" type="url" inputmode="url" placeholder="粘贴文章 URL，例如：https://example.com/article" />
+                      <button type="submit">读取 URL</button>
+                    </form>
                     <input id="fileInput" type="file" multiple accept=".docx,.txt,.md,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown" />
                     <select class="text-input visually-hidden" id="materialSourceSelect" aria-label="资料来源"><option value="">CEO Marks</option></select>
                     <select class="text-input visually-hidden" id="materialTypeSelect" aria-label="资料类型"><option value="">高层视角</option></select>

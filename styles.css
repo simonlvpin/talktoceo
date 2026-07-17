@@ -769,6 +769,24 @@ input:focus-visible {
   height: 28px;
 }
 
+.url-import-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 104px;
+  gap: 8px;
+  align-items: center;
+}
+
+.url-import-row .text-input {
+  min-height: 42px;
+  height: 42px;
+  margin: 0;
+}
+
+.url-import-row button {
+  min-height: 42px;
+  white-space: nowrap;
+}
+
 .hidden-source {
   display: none;
 }
@@ -4773,9 +4791,14 @@ textarea {
   }
 
   .compact-drop,
+  .url-import-row,
   .upload-actions {
     grid-column: 1;
     grid-row: auto;
+  }
+
+  .url-import-row {
+    grid-template-columns: 1fr;
   }
 
   .upload-material-item {
